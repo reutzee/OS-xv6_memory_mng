@@ -13,6 +13,8 @@ void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
                    // defined by the kernel linker script in kernel.ld
 
+static int page_counter=0;
+static int total_free_pages=0;
 struct run {
   struct run *next;
 };
@@ -22,6 +24,18 @@ struct {
   int use_lock;
   struct run *freelist;
 } kmem;
+
+int getfreepages(){
+  return page_counter;
+}
+
+int getTotalPageskernel(){
+  return PGROUNDDOWN(PHYSTOP-V2P(end))/PGSIZE;
+}
+int getTotalfreePages()
+  {
+    return total_free_pages;
+  }
 
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
@@ -34,6 +48,7 @@ kinit1(void *vstart, void *vend)
   initlock(&kmem.lock, "kmem");
   kmem.use_lock = 0;
   freerange(vstart, vend);
+  total_free_pages+= (PGROUNDDOWN((uint)vend) - PGROUNDUP((uint)vstart))/PGSIZE;
 }
 
 void
@@ -41,6 +56,7 @@ kinit2(void *vstart, void *vend)
 {
   freerange(vstart, vend);
   kmem.use_lock = 1;
+  total_free_pages+= (PGROUNDDOWN((uint)vend) - PGROUNDUP((uint)vstart))/PGSIZE;
 }
 
 void
@@ -61,6 +77,7 @@ kfree(char *v)
 {
   struct run *r;
 
+
   if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
     panic("kfree");
 
@@ -70,6 +87,7 @@ kfree(char *v)
   if(kmem.use_lock)
     acquire(&kmem.lock);
   r = (struct run*)v;
+  page_counter++;
   r->next = kmem.freelist;
   kmem.freelist = r;
   if(kmem.use_lock)
@@ -83,10 +101,10 @@ char*
 kalloc(void)
 {
   struct run *r;
-
   if(kmem.use_lock)
     acquire(&kmem.lock);
   r = kmem.freelist;
+  page_counter--;
   if(r)
     kmem.freelist = r->next;
   if(kmem.use_lock)

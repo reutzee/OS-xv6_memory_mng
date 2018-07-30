@@ -811,3 +811,17 @@ readFromSwapFile(struct proc * p, char* buffer, uint placeOnFile, uint size)
 
 
 
+void copySwapFile(struct proc* fromP, struct proc* toP){
+  if (fromP->pid < 3)
+    return;
+  char buff[PGSIZE];
+  int i;
+  for (i = 0; i < 16; i++){
+    if (fromP->disk_pg_arr[i].va !=(char*)-1){
+      if (readFromSwapFile(fromP, buff, PGSIZE*i, PGSIZE) != PGSIZE)
+        panic("CopySwapFile error");
+      if (writeToSwapFile(toP, buff, PGSIZE*i, PGSIZE) != PGSIZE)
+        panic("CopySwapFile error");
+    }
+  }
+}

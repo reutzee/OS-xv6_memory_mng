@@ -26,6 +26,36 @@ tvinit(void)
   initlock(&tickslock, "time");
 }
 
+
+
+
+
+
+pte_t *
+callwalkpgdir(pde_t *pgdir, const void *va, int alloc)
+{
+  pde_t *pde;
+  pte_t *pgtab;
+
+  pde = &pgdir[PDX(va)];
+  if(*pde & PTE_P){
+    pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
+  } else {
+    if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
+      return 0;
+    // Make sure all those PTE_P bits are zero.
+    memset(pgtab, 0, PGSIZE);
+    // The permissions here are overly generous, but they can
+    // be further restricted by the permissions in the page table
+    // entries, if necessary.
+    *pde = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
+  }
+  return &pgtab[PTX(va)];
+}
+
+
+
+
 void
 idtinit(void)
 {
@@ -36,6 +66,7 @@ idtinit(void)
 void
 trap(struct trapframe *tf)
 {
+  //int i;
   if(tf->trapno == T_SYSCALL){
     if(myproc()->killed)
       exit();
@@ -77,6 +108,18 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
+#ifndef NONE
+  case T_PGFLT:
+  {
+    int fault=rcr2();
+        if (myproc() != 0 && (tf->cs&3) == 3 &&pageIsInFile(fault, myproc()->pgdir)){
+      if (getPageFromFile(fault)){
+        myproc()->fault_counter++;
+        break;
+    }
+    }
+ }
+ #endif
 
   //PAGEBREAK: 13
   default:

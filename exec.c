@@ -7,6 +7,19 @@
 #include "x86.h"
 #include "elf.h"
 
+
+#ifdef NONE
+#else
+#ifdef LAPA
+static uint default_age=0xffffffff;
+#else
+static uint default_age=0;
+#endif
+#endif
+
+
+
+
 int
 exec(char *path, char **argv)
 {
@@ -18,6 +31,32 @@ exec(char *path, char **argv)
   struct proghdr ph;
   pde_t *pgdir, *oldpgdir;
   struct proc *curproc = myproc();
+
+
+#ifndef NONE
+  int backup_pages_in_memory=curproc->pages_in_memory_counter;
+  int backup_pages_in_swapfile=curproc->pages_in_swapfile_counter;
+  uint backup_pagedout=curproc->pagedout;
+  struct free_page backup_free_page [MAX_PSYC_PAGES];
+  struct disk_info backup_disk_info [MAX_PSYC_PAGES];
+  struct free_page* backup_tail;
+  struct free_page* backup_head;
+  int backup_fault=curproc->fault_counter;
+
+  int index;
+  for(index=0;index<MAX_PSYC_PAGES;index++)
+  {
+    backup_free_page[index].va=curproc->memory_pg_arr[index].va;
+    backup_free_page[index].next=curproc->memory_pg_arr[index].next;
+    backup_free_page[index].prev=curproc->memory_pg_arr[index].prev;
+    backup_free_page[index].age=curproc->memory_pg_arr[index].age;
+    backup_disk_info[index].location=curproc->disk_pg_arr[index].location;
+    backup_disk_info[index].va=curproc->disk_pg_arr[index].va;
+  }
+  backup_head=curproc->head;
+  backup_tail=curproc->tail;
+#endif
+
 
   begin_op();
 
@@ -37,6 +76,28 @@ exec(char *path, char **argv)
 
   if((pgdir = setupkvm()) == 0)
     goto bad;
+
+
+  #ifndef NONE
+
+  curproc->pages_in_memory_counter=0;
+  curproc->pages_in_swapfile_counter=0;
+  curproc->pagedout=0;
+  curproc->fault_counter=0;
+  for(index=0;index<MAX_PSYC_PAGES;index++)
+  {
+    curproc->memory_pg_arr[index].va=(char*)-1;
+    curproc->memory_pg_arr[index].next=0;
+    curproc->memory_pg_arr[index].prev=0;
+    curproc->memory_pg_arr[index].age=default_age;
+    curproc->disk_pg_arr[index].va=(char*)-1;
+    curproc->disk_pg_arr[index].location=-1;
+  }
+  curproc->head=0;
+  curproc->tail=0;
+
+
+  #endif
 
   // Load program into memory.
   sz = 0;
@@ -92,13 +153,28 @@ exec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(curproc->name, last, sizeof(curproc->name));
-
   // Commit to the user image.
+
+  #ifndef NONE//where we reset the swapfile
+  if(!(curproc->pid==1||(curproc->parent->pid==1)))
+  {
+
+  removeSwapFile(curproc);
+  //remove old swapfile and data
+  createSwapFile(curproc);
+}
+//create new swapfile  and data
+
+  #endif
   oldpgdir = curproc->pgdir;
   curproc->pgdir = pgdir;
   curproc->sz = sz;
   curproc->tf->eip = elf.entry;  // main
   curproc->tf->esp = sp;
+
+
+
+  
   switchuvm(curproc);
   freevm(oldpgdir);
   return 0;
@@ -110,5 +186,22 @@ exec(char *path, char **argv)
     iunlockput(ip);
     end_op();
   }
+  #ifndef NONE
+  curproc->pages_in_swapfile_counter=backup_pages_in_swapfile;
+  curproc->pages_in_memory_counter=backup_pages_in_memory;
+  curproc->pagedout=backup_pagedout;
+  curproc->fault_counter=backup_fault;
+  for(i=0;i<MAX_PSYC_PAGES;i++)
+  {
+    curproc->memory_pg_arr[i].va=backup_free_page[i].va;
+    curproc->memory_pg_arr[i].next=backup_free_page[i].next;
+    curproc->memory_pg_arr[i].prev=backup_free_page[i].prev;
+    curproc->memory_pg_arr[i].age=backup_free_page[i].age;
+    curproc->disk_pg_arr[i].location=backup_disk_info[i].location;
+    curproc->disk_pg_arr[i].va=backup_disk_info[i].va;
+  }
+  curproc->head=backup_head;
+  curproc->tail=backup_tail;
+  #endif
   return -1;
 }

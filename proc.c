@@ -7,6 +7,18 @@
 #include "proc.h"
 #include "spinlock.h"
 
+
+
+#ifdef NONE
+#else
+#ifdef LAPA
+static uint default_age=0xffffffff;
+#else
+static uint default_age=0;
+#endif
+#endif
+
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -71,7 +83,7 @@ myproc(void) {
 // state required to run in the kernel.
 // Otherwise return 0.
 static struct proc*
-allocproc(void)
+allocproc()
 {
   struct proc *p;
   char *sp;
@@ -106,12 +118,29 @@ found:
   // which returns to trapret.
   sp -= 4;
   *(uint*)sp = (uint)trapret;
-
   sp -= sizeof *p->context;
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
 
+#ifndef NONE
+  p->pagedout=0;
+  p->pages_in_memory_counter=0;
+  p->pages_in_swapfile_counter=0;
+  p->fault_counter=0;
+  int i=0;
+  for(i=0;i<MAX_PSYC_PAGES;i++)
+  {
+    p->disk_pg_arr[i].va=(char*)-1;//0xFFFFFFFF
+    p->disk_pg_arr[i].location=-1;
+    p->memory_pg_arr[i].va=(char*)-1;//0XFFFFFFFF
+    p->memory_pg_arr[i].age=default_age;
+    p->memory_pg_arr[i].next=0;
+    p->memory_pg_arr[i].prev=0;
+  }
+  p->head=0;
+  p->tail=0;
+#endif
   return p;
 }
 
@@ -138,7 +167,6 @@ userinit(void)
   p->tf->eflags = FL_IF;
   p->tf->esp = PGSIZE;
   p->tf->eip = 0;  // beginning of initcode.S
-
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
@@ -147,7 +175,6 @@ userinit(void)
   // writes to be visible, and the lock is also needed
   // because the assignment might not be atomic.
   acquire(&ptable.lock);
-
   p->state = RUNNABLE;
 
   release(&ptable.lock);
@@ -187,7 +214,7 @@ fork(void)
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
-  }
+}
 
   // Copy process state from proc.
   if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
@@ -210,7 +237,65 @@ fork(void)
 
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
-  pid = np->pid;
+   pid = np->pid;
+
+#ifndef NONE//copy stuff from parent to son;
+  np->pages_in_swapfile_counter=curproc->pages_in_swapfile_counter;
+  np->pages_in_memory_counter=curproc->pages_in_memory_counter;
+  //cprintf("np->page in swapfile =%d \n",np->pages_in_swapfile_counter);
+  np->pagedout=0;
+  np->fault_counter=0;
+  for(i=0;i<MAX_PSYC_PAGES;i++)
+  {
+    np->memory_pg_arr[i].va=curproc->memory_pg_arr[i].va;
+    np->memory_pg_arr[i].age=curproc->memory_pg_arr[i].age;
+    //np->memory_pg_arr[i].next=curproc->memory_pg_arr[i].next;
+    //np->memory_pg_arr[i].prev=curproc->memory_pg_arr[i].prev;
+    np->disk_pg_arr[i].va=curproc->disk_pg_arr[i].va;
+    np->disk_pg_arr[i].location=curproc->disk_pg_arr[i].location;
+
+  }
+
+int j;
+  for(i=0;i<MAX_PSYC_PAGES;i++)
+  {
+    for(j=0;j<MAX_PSYC_PAGES;++j)
+    {
+//      if(memory_pg_arr[i].next!=0)
+      if(np->memory_pg_arr[j].va==curproc->memory_pg_arr[i].next->va)
+        np->memory_pg_arr[i].next=&np->memory_pg_arr[i];
+    
+      if(np->memory_pg_arr[j].va==curproc->memory_pg_arr[i].prev->va)
+        np->memory_pg_arr[i].prev=&np->memory_pg_arr[i];
+    }
+
+  }
+for(i=0;i<MAX_PSYC_PAGES;i++)
+{
+  if (curproc->head->va ==np->memory_pg_arr[i].va)
+  {
+      np->head=&np->memory_pg_arr[i];
+  }
+
+ if (curproc->tail->va ==np->memory_pg_arr[i].va)
+{      np->tail=&np->memory_pg_arr[i];
+}
+
+}
+
+#ifndef NONE
+  if(curproc->pid!=1)//if my parent is init
+  {
+    createSwapFile(np);
+    copySwapFile(curproc,np);
+  }
+#endif
+
+
+ // np->tail=curproc->tail;
+#endif
+
+
 
   acquire(&ptable.lock);
 
@@ -230,10 +315,32 @@ exit(void)
   struct proc *curproc = myproc();
   struct proc *p;
   int fd;
-
   if(curproc == initproc)
-    panic("init exiting");
+   panic("init exiting");
+  
+  
+      #if TRUE
+   acquire(&ptable.lock);
 
+  procdump_proc(myproc());
+  release(&ptable.lock);
+
+  #endif
+    #ifndef NONE
+     if(!(curproc->pid==1||curproc->parent->pid==1))//NOT shell or init
+{
+    if (removeSwapFile(curproc) != 0)
+     {
+    panic("failed in delete the swap file at exit\n");
+     }
+     }
+
+
+    #endif
+
+
+
+  
   // Close all open files.
   for(fd = 0; fd < NOFILE; fd++){
     if(curproc->ofile[fd]){
@@ -241,6 +348,7 @@ exit(void)
       curproc->ofile[fd] = 0;
     }
   }
+
 
   begin_op();
   iput(curproc->cwd);
@@ -262,7 +370,8 @@ exit(void)
   }
 
   // Jump into the scheduler, never to return.
-  curproc->state = ZOMBIE;
+  curproc->state = ZOMBIE; 
+ 
   sched();
   panic("zombie exit");
 }
@@ -311,6 +420,57 @@ wait(void)
   }
 }
 
+
+
+
+pte_t *
+proc_walkpagedir(pde_t *pgdir, const void *va, int alloc)
+{
+  pde_t *pde;
+  pte_t *pgtab;
+
+  pde = &pgdir[PDX(va)];
+  if(*pde & PTE_P){
+    pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
+  } else {
+    if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
+      return 0;
+    // Make sure all those PTE_P bits are zero.
+    memset(pgtab, 0, PGSIZE);
+    // The permissions here are overly generous, but they can
+    // be further restricted by the permissions in the page table
+    // entries, if necessary.
+    *pde = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
+  }
+  return &pgtab[PTX(va)];
+}
+
+
+ int updateAccessBit_proc(char *va,struct proc* p)
+{
+  uint accessed;
+  pte_t *pte = proc_walkpagedir(p->pgdir, (void*)va, 0);
+  if (!pte){
+      cprintf("pid=%d\n",p->pid);
+    panic("updateAccessBi111t: pte is empty");
+  }
+  if(!*pte)
+  {
+    return -2;
+  }
+  accessed = (*pte) & PTE_A;
+  (*pte) &= ~PTE_A;
+  if(accessed==0)
+  {
+      return 0;
+    }
+    else
+    {
+        return 1;
+    }
+}
+
+
 //PAGEBREAK: 42
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -325,7 +485,15 @@ scheduler(void)
   struct proc *p;
   struct cpu *c = mycpu();
   c->proc = 0;
-  
+#ifndef NONE
+#ifndef SCFIFO
+  int i=0;
+#endif
+#endif
+#ifdef AQ
+  uint tmp_age;
+  char* tmp_va=0;
+#endif
   for(;;){
     // Enable interrupts on this processor.
     sti();
@@ -344,6 +512,62 @@ scheduler(void)
       p->state = RUNNING;
 
       swtch(&(c->scheduler), p->context);
+      #ifndef NONE
+      #ifndef SCFIFO
+      #ifndef AQ
+      if(!(p->pid==1||p->parent->pid==1))
+      {
+        for(i=0;i<MAX_PSYC_PAGES;i++)
+        {
+            if(p->memory_pg_arr[i].va!=(char*)-1)
+            {
+            p->memory_pg_arr[i].age=p->memory_pg_arr[i].age>>1;
+            int tmp=updateAccessBit_proc(p->memory_pg_arr[i].va,p)==1;
+            if(tmp==1)
+            p->memory_pg_arr[i].age=p->memory_pg_arr[i].age|(1<<31);
+            }
+        }
+      }
+      #endif
+      #endif
+      #endif
+      #ifdef AQ
+      if(!(p->pid==1||p->parent->pid==1))
+      {
+        for(i=0;i<MAX_PSYC_PAGES;i++)
+        {
+          if(p->memory_pg_arr[i].va!=(char*)-1)
+          {
+            int tmp=updateAccessBit_proc(p->memory_pg_arr[i].va,p)==1;
+            if(tmp==1)
+            {
+              p->memory_pg_arr[i].age=1;
+            }
+            else
+            {
+              p->memory_pg_arr[i].age=0;
+            }          
+          }
+        }
+        struct free_page* curpage=p->head;//remove from tail
+        while(curpage!=0)
+        {
+          if(curpage->prev != 0)
+          {
+            if(curpage->prev->age==0&&curpage->age==1)
+            {
+              tmp_va=curpage->prev->va;
+              curpage->prev->va=curpage->va;
+              curpage->va=tmp_va;
+              tmp_age=curpage->age;
+              curpage->age=curpage->prev->age;
+              curpage->prev->age=tmp_age;
+            }
+          }
+          curpage=curpage->next;
+        }
+      }
+      #endif
       switchkvm();
 
       // Process is done running for now.
@@ -500,6 +724,96 @@ kill(int pid)
 // Print a process listing to console.  For debugging.
 // Runs when user types ^P on console.
 // No lock to avoid wedging a stuck machine further.
+
+
+
+void
+procdump_proc(struct proc* p)
+{
+  static char *states[] = {
+  [UNUSED]    "unused",
+  [EMBRYO]    "embryo",
+  [SLEEPING]  "sleep ",
+  [RUNNABLE]  "runble",
+  [RUNNING]   "run   ",
+  [ZOMBIE]    "zombie"
+  };
+  int i;
+  char *state;
+  uint pc[10];
+  uint page_counter;
+  
+    if(p->state == UNUSED)
+      return;
+    if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
+      state = states[p->state];
+    else
+      state = "???";
+    page_counter=p->pages_in_memory_counter+p->pages_in_swapfile_counter;
+    cprintf(" %d %s ", p->pid, state);
+    cprintf("%d  %d  %d  %d  %s  ",page_counter,p->pages_in_swapfile_counter,p->fault_counter,p->pagedout,p->name);
+   // cprintf("%d %s %s",p->pid,state,p->name);
+    //<field 1><field 2><allocated memory pages><paged out><page faults><total number of paged out><field set 3> 
+    //  cprintf("%d  %s %d %d %d %d %s",p->pid,state,page_counter,p->pages_in_swapfile_counter,p->fault_counter,p->pagedout,p->name);
+    //cprintf("%d %s %d %d %d %s", p->pid,state,page_counter,p->pages_in_swapfile_counter,p->fault_counter,p->pagedout,p->name);
+    if(p->state == SLEEPING){
+      getcallerpcs((uint*)p->context->ebp+2, pc);
+      for(i=0; i<10 && pc[i] != 0; i++)
+        cprintf(" %p", pc[i]);
+    }
+    cprintf("\n");
+      cprintf("%d / %d free pages in the system\n", getfreepages(),getTotalfreePages());
+}
+
+
+
+
+
+
+#ifdef TRUE
+void
+procdump(void)
+{
+  static char *states[] = {
+  [UNUSED]    "unused",
+  [EMBRYO]    "embryo",
+  [SLEEPING]  "sleep ",
+  [RUNNABLE]  "runble",
+  [RUNNING]   "run   ",
+  [ZOMBIE]    "zombie"
+  };
+  int i;
+  struct proc *p;
+  char *state;
+  uint pc[10];
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+  {
+    if(p->state == UNUSED)
+      continue;
+    if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
+      state = states[p->state];
+    else
+      state = "???";
+    //cprintf("\npid:%d state:%s\n", p->pid, state);
+    //cprintf("allocated memory pages:%d paged out:%d page faults:%d total number of paged out:%d\n name:%s\n",page_counter,p->pages_in_swapfile_counter,p->fault_counter,p->pagedout,p->name);
+    cprintf(" %d %s ", p->pid, state);
+    cprintf("%d  %d  %d  %d  %s  ",(p->pages_in_swapfile_counter+p->pages_in_memory_counter),p->pages_in_swapfile_counter,p->fault_counter,p->pagedout,p->name);
+  //  cprintf("%d %s %s",p->pid,state,p->name);
+    //<field 1><field 2><allocated memory pages><paged out><page faults><total number of paged out><field set 3> 
+    //  cprintf("%d  %s %d %d %d %d %s",p->pid,state,page_counter,p->pages_in_swapfile_counter,p->fault_counter,p->pagedout,p->name);
+    //cprintf("%d %s %d %d %d %s", p->pid,state,page_counter,p->pages_in_swapfile_counter,p->fault_counter,p->pagedout,p->name);
+    if(p->state == SLEEPING){
+      getcallerpcs((uint*)p->context->ebp+2, pc);
+      for(i=0; i<10 && pc[i] != 0; i++)
+        cprintf(" %p", pc[i]);
+    }
+    cprintf("\n");
+    //<current free pages>/ <total free pages>free pages in the system
+    //cprintf("free pages =%d totalfree page =%d \n",getfreepages(),getTotalfreePages());
+  }
+      cprintf("%d / %d free pages in the system\n", getfreepages(),getTotalfreePages());
+}
+#else//is none
 void
 procdump(void)
 {
@@ -532,3 +846,5 @@ procdump(void)
     cprintf("\n");
   }
 }
+
+#endif

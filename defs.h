@@ -56,6 +56,7 @@ int		createSwapFile(struct proc* p);
 int		readFromSwapFile(struct proc * p, char* buffer, uint placeOnFile, uint size);
 int		writeToSwapFile(struct proc* p, char* buffer, uint placeOnFile, uint size);
 int		removeSwapFile(struct proc* p);
+void copySwapFile(struct proc* from, struct proc* to);
 
 // ide.c
 void            ideinit(void);
@@ -72,7 +73,9 @@ char*           kalloc(void);
 void            kfree(char*);
 void            kinit1(void*, void*);
 void            kinit2(void*, void*);
-
+int 			getTotalPageskernel(void);
+int 			getTotalfreePages();
+int 			getfreepages(void);
 // kbd.c
 void            kbdintr(void);
 
@@ -124,6 +127,7 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
+void			procdump_proc(struct proc* p);
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -164,6 +168,7 @@ int             fetchint(uint, int*);
 int             fetchstr(uint, char**);
 void            syscall(void);
 
+
 // timer.c
 void            timerinit(void);
 
@@ -184,6 +189,7 @@ void            kvmalloc(void);
 pde_t*          setupkvm(void);
 char*           uva2ka(pde_t*, char*);
 int             allocuvm(pde_t*, uint, uint);
+int             allocuvm_exec(pde_t*, uint, uint,int);
 int             deallocuvm(pde_t*, uint, uint);
 void            freevm(pde_t*);
 void            inituvm(pde_t*, char*, uint);
@@ -193,6 +199,19 @@ void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
+void            fixPagedInPTE(int userPageVAddr, int pagePAddr, pde_t * pgdir);
+int 			swap_pages(char* va);
+void 			moveram_to_disk(struct proc* p);
+struct free_page* scfifo_alg(struct proc* p);
+void 			insert_to_disk(struct proc* p,int i,struct free_page* tmp);
+int                 pageIsInFile(int userPageVAddr, pde_t * pgdir);
+int getPageFromFile(int cr2);
+int update_memory(struct proc* p,char*va);
+struct free_page* select_page_to_remove(struct proc* p);
+int getPagePAddr(int userPageVAddr, pde_t * pgdir);
+void fixPagedOutPTE( pde_t * pgdir,int va,int walkpgdirmode);
+int get_user_bit(char* va);
 
+    
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
